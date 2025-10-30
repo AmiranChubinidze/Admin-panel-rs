@@ -1,0 +1,36 @@
+{
+  "name": "Amnairi RS Assistant",
+  "version": "1.4",
+  "manifest_version": 3,
+  "description": "Automates RS.ge invoice processing with license validation.",
+  "permissions": ["storage", "debugger", "notifications", "alarms"],
+  "host_permissions": [
+    "https://server-m02g.onrender.com/*",
+    "https://*.rs.ge/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.rs.ge/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
