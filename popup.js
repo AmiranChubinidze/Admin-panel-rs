@@ -1,4 +1,5 @@
-﻿const API_BASE = "https://amnairi-invoice-automation.onrender.com";
+// popup.js
+const API_BASE = "https://amnairi-rs-server.onrender.com";
 
 const authView = document.getElementById("auth-view");
 const mainView = document.getElementById("main-view");
@@ -21,44 +22,43 @@ const storageRemove = (keys) =>
 const REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 function fadeTo(view) {
-  [authView, mainView].forEach((section) => {
-    section.classList.remove("active");
-  });
+  [authView, mainView].forEach((section) => section.classList.remove("active"));
   view.classList.add("active");
 }
 
-function showMessage(el, message, isError = true) {
-  if (!el) return;
-  el.textContent = message || "";
-  el.style.color = isError ? "#d93025" : "#15803d";
-  el.classList.toggle("visible", Boolean(message));
+function showMessage(element, message, isError = true) {
+  if (!element) return;
+  element.textContent = message || "";
+  element.style.color = isError ? "#d93025" : "#15803d";
+  element.classList.toggle("visible", Boolean(message));
 }
 
-async function login(username, password, remember) {
+async function login(username, password) {
   showMessage(loginStatus, "");
   try {
     const response = await fetch(`${API_BASE}/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ su: username, sp: password }),
     });
     const payload = await response.json();
     if (!response.ok || !payload?.success) {
-      throw new Error(payload?.message || "ავტორიზაცია ვერ მოხერხდა.");
+      throw new Error(payload?.message || "ავტორიზაცია ვერ შესრულდა.");
     }
 
     const now = Date.now();
     await storageSet({
       token: payload.token,
-      refreshToken: payload.refreshToken,
+      refreshToken: payload.refreshToken ?? null,
       user: payload.user,
       loginTime: now,
-      remember,
     });
     populateMain(payload.user);
     fadeTo(mainView);
+    showMessage(mainStatus, "ავტორიზაცია წარმატებით დასრულდა.", false);
+    setTimeout(() => showMessage(mainStatus, ""), 1500);
   } catch (error) {
-    showMessage(loginStatus, error.message || "ვერ შევძელით ავტორიზაცია.", true);
+    showMessage(loginStatus, error.message || "ავტორიზაცია ვერ შესრულდა.", true);
   }
 }
 
@@ -81,29 +81,33 @@ async function refreshToken(currentRefreshToken) {
     const response = await fetch(`${API_BASE}/refresh`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refreshToken: currentRefreshToken }),
+      body: JSON.stringify({ token: currentRefreshToken || undefined }),
     });
-    if (!response.ok) throw new Error("Refresh failed");
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload?.message || "Token refresh failed");
+    }
     const payload = await response.json();
-    if (!payload?.token || !payload?.refreshToken) {
-      throw new Error("Invalid refresh payload");
+    if (!payload?.token) {
+      throw new Error("Refresh payload is invalid");
     }
     const now = Date.now();
     await storageSet({
       token: payload.token,
-      refreshToken: payload.refreshToken,
+      refreshToken: payload.refreshToken ?? null,
       loginTime: now,
+      user: payload.user ?? null,
     });
     return payload;
   } catch (error) {
-    await storageRemove(["token", "refreshToken", "loginTime", "user", "remember"]);
+    await storageRemove(["token", "refreshToken", "loginTime", "user"]);
     throw error;
   }
 }
 
 function populateMain(user) {
-  const name = user?.name || user?.email || "მომხმარებელი";
-  mainUsername.textContent = `👤 შესული ხართ როგორც ${name}`;
+  const name = user?.name || user?.su || "უცნობი მომხმარებელი";
+  mainUsername.textContent = `მომხმარებელი: ${name}`;
 }
 
 async function initialize() {
@@ -124,7 +128,7 @@ async function initialize() {
 
   const verifiedUser = await verifyToken(token);
   if (!verifiedUser) {
-    await storageRemove(["token", "refreshToken", "loginTime", "user", "remember"]);
+    await storageRemove(["token", "refreshToken", "loginTime", "user"]);
     fadeTo(authView);
     return;
   }
@@ -132,12 +136,7 @@ async function initialize() {
   try {
     if (typeof loginTime === "number" && Date.now() - loginTime > REFRESH_INTERVAL_MS) {
       const refreshed = await refreshToken(refreshToken);
-      if (refreshed?.user) {
-        await storageSet({ user: refreshed.user });
-        populateMain(refreshed.user);
-      } else {
-        populateMain(verifiedUser);
-      }
+      populateMain(refreshed?.user ?? verifiedUser);
     } else {
       await storageSet({ user: verifiedUser });
       populateMain(verifiedUser);
@@ -150,40 +149,41 @@ async function initialize() {
 }
 
 async function handleLogout() {
-  await storageRemove(["token", "refreshToken", "loginTime", "user", "remember"]);
-  showMessage(mainStatus, "სესია დასრულდა.", false);
+  await storageRemove(["token", "refreshToken", "loginTime", "user"]);
+  showMessage(mainStatus, "გამოსვლა შესრულდა.", false);
   setTimeout(() => {
     showMessage(mainStatus, "");
     fadeTo(authView);
-  }, 800);
+  }, 900);
 }
 
 function notifyPanel(target) {
-  chrome.runtime.sendMessage({ action: "focusPanel", target }).catch(() => {});
+  const mapped = target === "declarations" ? "declarations" : "invoices";
+  chrome.runtime.sendMessage({ action: "focusPanel", target: mapped }).catch(() => {});
 }
 
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const username = event.target.username.value.trim();
   const password = event.target.password.value;
-  const remember = rememberCheckbox.checked;
+
   if (!username || !password) {
-    showMessage(loginStatus, "გთხოვთ შეავსოთ ორივე ველი.", true);
+    showMessage(loginStatus, "გთხოვთ, შეავსოთ სავალდებულო ველები.", true);
     return;
   }
-  showMessage(loginStatus, "");
-  await login(username, password, remember);
+
+  await login(username, password);
 });
 
 openWaybillsBtn.addEventListener("click", () => {
-  notifyPanel("waybills");
-  showMessage(mainStatus, "ზედნადებების პანელი გახსნილია.", false);
+  notifyPanel("invoices");
+  showMessage(mainStatus, "ზედნადებების პანელი გააქტიურდა.", false);
   setTimeout(() => showMessage(mainStatus, ""), 1500);
 });
 
 openDeclarationsBtn.addEventListener("click", () => {
   notifyPanel("declarations");
-  showMessage(mainStatus, "დეკლარაციების პანელი გახსნილია.", false);
+  showMessage(mainStatus, "დეკლარაციების პანელი გააქტიურდა.", false);
   setTimeout(() => showMessage(mainStatus, ""), 1500);
 });
 

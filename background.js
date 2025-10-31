@@ -1,4 +1,5 @@
-const API_BASE = "https://server-m02g.onrender.com";
+// background.js
+const API_BASE = "https://amnairi-rs-server.onrender.com";
 const REFRESH_ALARM = "amnairi-token-refresh";
 const REFRESH_INTERVAL_MINUTES = 30;
 const REFRESH_THRESHOLD_MS = 6 * 60 * 60 * 1000; // 6 hours
@@ -16,7 +17,8 @@ function decodeJwt(token) {
   if (segments.length !== 3) return null;
   try {
     const base64 = segments[1].replace(/-/g, "+").replace(/_/g, "/");
-    const json = atob(base64.padEnd(base64.length + (4 - (base64.length % 4)) % 4, "="));
+    const padded = base64.padEnd(base64.length + (4 - (base64.length % 4)) % 4, "=");
+    const json = atob(padded);
     return JSON.parse(json);
   } catch (err) {
     console.warn("Failed to decode JWT:", err);
@@ -25,11 +27,7 @@ function decodeJwt(token) {
 }
 
 async function getAccountState() {
-  const data = await storageGet([
-    "mainAccount",
-    "subAccounts",
-    "selectedAccount",
-  ]);
+  const data = await storageGet(["mainAccount", "subAccounts", "selectedAccount"]);
   const mainAccount = data.mainAccount ?? null;
   const subAccounts = Array.isArray(data.subAccounts)
     ? data.subAccounts.filter((acc) => acc?.token && acc?.label)
@@ -42,12 +40,11 @@ async function getAccountState() {
 }
 
 async function saveAccountState(state) {
-  const payload = {
+  await storageSet({
     mainAccount: state.mainAccount ?? null,
     subAccounts: Array.isArray(state.subAccounts) ? state.subAccounts : [],
     selectedAccount: state.selectedAccount ?? null,
-  };
-  await storageSet(payload);
+  });
 }
 
 async function migratePanelState(oldToken, newToken) {
@@ -71,7 +68,9 @@ async function invalidateToken(badToken, reason) {
       type: "basic",
       iconUrl: "icons/icon128.png",
       title: "სესია დასრულდა",
-      message: reason || "გთხოვთ, გაიაროთ ავტორიზაცია თავიდან.",
+      message:
+        reason ||
+        "მთავარი ანგარიშის ტოკენი გაუქმდა. გთხოვთ, გაიაროთ ავტორიზაცია Amnairi-ის პოპაპიდან.",
     });
     chrome.tabs.query({ url: "*://*.rs.ge/*" }, (tabs) => {
       tabs.forEach((tab) =>
@@ -96,7 +95,7 @@ async function invalidateToken(badToken, reason) {
     chrome.notifications.create({
       type: "basic",
       iconUrl: "icons/icon128.png",
-      title: "ქვე-ანგარიში გათიშულია",
+      title: "ქვეანგარიშის ტოკენი გაუქმდა",
       message: reason,
     });
   }
@@ -110,11 +109,11 @@ function shouldRefreshToken(token) {
   return remaining <= REFRESH_THRESHOLD_MS;
 }
 
-async function requestTokenRefresh(token) {
-  const response = await fetch(`${API_BASE}/auth/refresh`, {
+async function requestTokenRefresh(refreshToken) {
+  const response = await fetch(`${API_BASE}/refresh`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token }),
+    body: JSON.stringify({ token: refreshToken }),
   });
 
   if (response.status === 401) {
@@ -125,10 +124,10 @@ async function requestTokenRefresh(token) {
     throw new Error(payload.message || "Refresh failed");
   }
   const payload = await response.json();
-  if (!payload?.newToken) {
+  if (!payload?.token) {
     throw new Error("Refresh response missing token");
   }
-  return payload.newToken;
+  return payload;
 }
 
 async function refreshExpiringTokens() {
@@ -136,14 +135,14 @@ async function refreshExpiringTokens() {
   if (!state.mainAccount?.token) return;
 
   let stateChanged = false;
-  let stateInvalidated = false;
 
   const accounts = [
-    { kind: "main", index: -1, token: state.mainAccount.token },
+    { kind: "main", index: -1, token: state.mainAccount.token, refreshToken: state.mainAccount.refreshToken },
     ...state.subAccounts.map((acc, index) => ({
       kind: "sub",
       index,
       token: acc.token,
+      refreshToken: acc.refreshToken,
     })),
   ];
 
@@ -152,37 +151,37 @@ async function refreshExpiringTokens() {
     if (!shouldRefreshToken(account.token)) continue;
 
     try {
-      const newToken = await requestTokenRefresh(account.token);
-      await migratePanelState(account.token, newToken);
+      const refreshSource = account.refreshToken || account.token;
+      const payload = await requestTokenRefresh(refreshSource);
+
+      const newToken = payload.token;
+      const newRefreshToken = payload.refreshToken ?? refreshSource;
+
       if (account.kind === "main") {
         state.mainAccount.token = newToken;
+        state.mainAccount.refreshToken = newRefreshToken;
         if (state.selectedAccount === account.token) {
           state.selectedAccount = newToken;
         }
       } else if (state.subAccounts[account.index]) {
         state.subAccounts[account.index].token = newToken;
+        state.subAccounts[account.index].refreshToken = newRefreshToken;
         if (state.selectedAccount === account.token) {
           state.selectedAccount = newToken;
         }
       }
+
+      await migratePanelState(account.token, newToken);
       stateChanged = true;
     } catch (err) {
       await invalidateToken(
         account.token,
         account.kind === "main"
-          ? "მთავარი ანგარიში გაუქმდა ან ვადაგასულია."
-          : "ქვე-ანგარიშის სესია ვადაგასულია."
+          ? "მთავარი ანგარიშის ტოკენის განახლება ვერ შესრულდა. გთხოვთ, გაიაროთ ავტორიზაცია თავიდან."
+          : "ქვეანგარიშის ტოკენის განახლება ვერ შესრულდა და ის გაუქმდა."
       );
-      stateInvalidated = true;
-      if (account.kind === "main") {
-        return;
-      }
-      break;
+      if (account.kind === "main") return;
     }
-  }
-
-  if (stateInvalidated) {
-    return;
   }
 
   if (stateChanged) {
@@ -205,6 +204,7 @@ async function getActiveAccount() {
   }
   const sub = state.subAccounts.find((acc) => acc.token === activeToken);
   if (sub) return { token: sub.token, label: sub.label };
+
   if (state.mainAccount) {
     await storageSet({ selectedAccount: state.mainAccount.token });
     return { token: state.mainAccount.token, label: state.mainAccount.label };
@@ -220,41 +220,35 @@ async function fetchWaybillTotal(token, month) {
   });
 
   if (response.status === 401) {
-    await invalidateToken(token, "სესია ვეღარ დადასტურდა.");
-    throw new Error("სესია აღარ არის აქტიური.");
+    await invalidateToken(token, "ტოკენის მოქმედება RS.ge-ს პასუხის გამო შეწყდა.");
+    throw new Error("ავტორიზაცია ვერ დადასტურდა.");
   }
 
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
-    throw new Error(payload.message || "გზავნა ვერ შესრულდა");
+    throw new Error(payload.message || "ზედნადებების ჯამი ვერ განახლდა.");
   }
 
   const payload = await response.json();
   if (typeof payload.total !== "number") {
-    throw new Error("მიმდინარე ჯამი ვერ დაითვალა");
+    throw new Error("ზედნადებების ჯამი ვერ განისაზღვრა.");
   }
   return payload.total;
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create(REFRESH_ALARM, {
-    periodInMinutes: REFRESH_INTERVAL_MINUTES,
-  });
+  chrome.alarms.create(REFRESH_ALARM, { periodInMinutes: REFRESH_INTERVAL_MINUTES });
   refreshExpiringTokens().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  chrome.alarms.create(REFRESH_ALARM, {
-    periodInMinutes: REFRESH_INTERVAL_MINUTES,
-  });
+  chrome.alarms.create(REFRESH_ALARM, { periodInMinutes: REFRESH_INTERVAL_MINUTES });
   refreshExpiringTokens().catch(() => {});
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === REFRESH_ALARM) {
-    refreshExpiringTokens().catch((err) =>
-      console.warn("Token refresh alarm failed:", err)
-    );
+    refreshExpiringTokens().catch((err) => console.warn("Token refresh alarm failed:", err));
   }
 });
 
@@ -276,14 +270,10 @@ async function attachDebuggerToTab(tabId) {
     return;
   }
 
-  const handler = (source, method, params) => {
+  const handler = (source, method) => {
     if (source.tabId === tabId && method === "Page.javascriptDialogOpening") {
       chrome.debugger
-        .sendCommand(
-          { tabId },
-          "Page.handleJavaScriptDialog",
-          { accept: true }
-        )
+        .sendCommand({ tabId }, "Page.handleJavaScriptDialog", { accept: true })
         .catch(() => {});
     }
   };
@@ -313,6 +303,14 @@ function detachDebuggerFromTab(tabId) {
   attachedTabs.delete(tabId);
 }
 
+function forwardToRSTabs(message) {
+  chrome.tabs.query({ url: "*://*.rs.ge/*" }, (tabs) => {
+    tabs.forEach((tab) => {
+      chrome.tabs.sendMessage(tab.id, message);
+    });
+  });
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     switch (message?.action) {
@@ -333,21 +331,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       case "fetchWaybillTotal": {
         try {
           const { token, month } = message;
-          if (!token) throw new Error("Token is missing");
+          if (!token) throw new Error("ტოკენი არ არის მითითებული.");
           const total = await fetchWaybillTotal(token, month);
           sendResponse({ ok: true, total });
         } catch (err) {
-          sendResponse({ ok: false, message: err.message || "არასრულად გამოთვლილი" });
+          sendResponse({ ok: false, message: err.message || "ზედნადებების ჯამი ვერ განახლდა." });
         }
         return;
       }
 
+      case "focusPanel": {
+        forwardToRSTabs({ action: "focusPanel", target: message.target });
+        break;
+      }
+
       case "stopAutomation": {
-        chrome.tabs.query({ url: "*://*.rs.ge/*" }, (tabs) => {
-          tabs.forEach((tab) =>
-            chrome.tabs.sendMessage(tab.id, { action: "stopAutomation" })
-          );
-        });
+        forwardToRSTabs({ action: "stopAutomation" });
         break;
       }
 
