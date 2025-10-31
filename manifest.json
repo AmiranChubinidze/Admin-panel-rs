@@ -5,7 +5,7 @@
   "description": "Automates RS.ge declarations with secure token-based access and multi-account support.",
   "permissions": ["storage", "debugger", "notifications", "alarms"],
   "host_permissions": [
-    "https://server-m02g.onrender.com/*",
+    "https://amnairi-rs-server.onrender.com/*",
     "https://*.rs.ge/*"
   ],
   "background": {

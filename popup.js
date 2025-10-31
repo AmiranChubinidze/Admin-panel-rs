@@ -1,4 +1,4 @@
-const API_BASE = "https://server-m02g.onrender.com";
+﻿const API_BASE = "https://amnairi-invoice-automation.onrender.com";
 
 const authView = document.getElementById("auth-view");
 const mainView = document.getElementById("main-view");
