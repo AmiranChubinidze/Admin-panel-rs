@@ -44,6 +44,44 @@ function injectPanel() {
   `;
   document.body.appendChild(panel);
 
+  // ---- Extra styles for initial view and transitions ----
+  (function ensureExtraStyles() {
+    if (document.getElementById('rs-extra-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'rs-extra-styles';
+    style.textContent = `
+      #rs-buttons-initial button {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        margin-bottom: 10px;
+        width: 100%;
+        padding: 9px 12px;
+        background: linear-gradient(135deg, #0066cc, #004999);
+        border: none;
+        border-radius: 12px;
+        color: white;
+        font-weight: 600;
+        font-size: 13px;
+        transition: all 0.25s ease;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+      }
+      #rs-buttons-initial button:hover {
+        background: linear-gradient(135deg, #005bb5, #003f82);
+        transform: translateY(-2px) scale(1.03);
+        box-shadow: 0 6px 12px rgba(0,0,0,0.25);
+      }
+      #rs-buttons-initial button:active {
+        transform: translateY(0) scale(0.98);
+      }
+      .rs-section { transition: opacity 200ms ease, max-height 200ms ease, margin 200ms ease; overflow: hidden; }
+      .rs-visible { opacity: 1; max-height: 1000px; margin-top: 0; }
+      .rs-hidden { opacity: 0; max-height: 0; margin-top: 0; }
+    `;
+    document.head.appendChild(style);
+  })();
+
   // ---- Apply initial visibility + react to popup toggle ----
   chrome.storage.local.get(["panelEnabled"], ({ panelEnabled }) => {
     const visible = panelEnabled !== false; // default: visible
@@ -71,6 +109,34 @@ function injectPanel() {
   // ---- Restore collapse state ----
   const toggleBtn = document.getElementById("rs-toggle");
   const body = document.getElementById("rs-panel-body");
+
+  // ---- Build initial state and wrap existing content ----
+  try {
+    const buttonsEl = document.getElementById("rs-buttons");
+    const optionsEl = document.getElementById("rs-options");
+    if (buttonsEl && optionsEl && body) {
+      const mainSection = document.createElement("div");
+      mainSection.id = "rs-main";
+      mainSection.className = "rs-section rs-hidden";
+      mainSection.appendChild(buttonsEl);
+      mainSection.appendChild(optionsEl);
+
+      const initialSection = document.createElement("div");
+      initialSection.id = "rs-initial";
+      initialSection.className = "rs-section rs-visible";
+      initialSection.innerHTML = `
+        <div id="rs-buttons-initial">
+          <button id="rs-btn-invoices">ზედნადებები</button>
+          <button id="rs-btn-declaration">დეკლარაცია</button>
+        </div>
+      `;
+
+      body.appendChild(initialSection);
+      body.appendChild(mainSection);
+    }
+  } catch (e) {
+    console.warn("RS panel: initial/main section setup failed", e);
+  }
   (function restorePanelCollapse() {
     const collapsed = localStorage.getItem("rs_panel_collapsed") === "true";
     if (collapsed) {
@@ -93,6 +159,23 @@ function injectPanel() {
   useCheckAllEl.addEventListener("change", () => {
     localStorage.setItem("rs_use_checkall", String(useCheckAllEl.checked));
   });
+
+  // ---- Initial state toggle ----
+  const initialSection = document.getElementById("rs-initial");
+  const mainSection = document.getElementById("rs-main");
+  const invoicesBtn = document.getElementById("rs-btn-invoices");
+  const declarationBtn = document.getElementById("rs-btn-declaration");
+
+  if (invoicesBtn) {
+    invoicesBtn.addEventListener("click", () => {
+      if (initialSection && mainSection) {
+        initialSection.classList.remove("rs-visible");
+        initialSection.classList.add("rs-hidden");
+        mainSection.classList.remove("rs-hidden");
+        mainSection.classList.add("rs-visible");
+      }
+    });
+  }
 
   // ---- BUTTONS ----
   const startBtn = document.getElementById("rs-start");
