@@ -1,115 +1,192 @@
-const licenseScreen = document.getElementById("license-screen");
-const successScreen = document.getElementById("success-screen");
-const status = document.getElementById("status");
-const activeKeyTag = document.getElementById("activeKey");
-const panelToggleContainer = document.getElementById("panel-toggle");
-const toggleCheckbox = document.getElementById("togglePanelCheckbox");
+const API_BASE = "https://server-m02g.onrender.com";
 
-// Show success UI
-function showSuccess(key) {
-  licenseScreen.classList.add("hidden");      // Hide activation form
-  successScreen.classList.add("active");      // Show success message
-  activeKeyTag.textContent = `🔑 ${key}`;
-  panelToggleContainer.classList.remove("hidden"); // Reveal panel toggle
-}
+const authView = document.getElementById("auth-view");
+const mainView = document.getElementById("main-view");
+const loginForm = document.getElementById("login-form");
+const loginStatus = document.getElementById("login-status");
+const mainStatus = document.getElementById("main-status");
+const rememberCheckbox = document.getElementById("login-remember");
+const mainUsername = document.getElementById("main-username");
+const openWaybillsBtn = document.getElementById("open-waybills");
+const openDeclarationsBtn = document.getElementById("open-declarations");
+const logoutBtn = document.getElementById("logout-btn");
 
-// Unified Device ID
-async function getDeviceId() {
-  return new Promise((resolve) => {
-    chrome.storage.local.get(["deviceId"], (result) => {
-      if (result.deviceId) return resolve(result.deviceId);
-      const newId = crypto.randomUUID();
-      chrome.storage.local.set({ deviceId: newId }, () => resolve(newId));
-    });
+const storageGet = (keys) =>
+  new Promise((resolve) => chrome.storage.local.get(keys, resolve));
+const storageSet = (values) =>
+  new Promise((resolve) => chrome.storage.local.set(values, resolve));
+const storageRemove = (keys) =>
+  new Promise((resolve) => chrome.storage.local.remove(keys, resolve));
+
+const REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+function fadeTo(view) {
+  [authView, mainView].forEach((section) => {
+    section.classList.remove("active");
   });
+  view.classList.add("active");
 }
 
-// Validate license
-async function validateKey(userKey) {
-  const key = userKey.trim().toUpperCase();
-  const deviceId = await getDeviceId();
+function showMessage(el, message, isError = true) {
+  if (!el) return;
+  el.textContent = message || "";
+  el.style.color = isError ? "#d93025" : "#15803d";
+  el.classList.toggle("visible", Boolean(message));
+}
+
+async function login(username, password, remember) {
+  showMessage(loginStatus, "");
   try {
-    const res = await fetch("https://server-m02g.onrender.com/validate", {
+    const response = await fetch(`${API_BASE}/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key, deviceId })
+      body: JSON.stringify({ username, password }),
     });
-    return await res.json();
-  } catch (err) {
-    console.error("Validation error:", err);
-    return { valid: false, message: "Server unreachable" };
-  }
-}
-
-// Check stored key on startup
-async function checkStoredKey() {
-  chrome.storage.local.get(["licenseKey"], async (res) => {
-    const storedKey = res.licenseKey;
-    if (!storedKey) return;
-
-    status.textContent = "⏳ ვამოწმებ შენახულ კოდს...";
-    status.style.color = "orange";
-
-    const response = await validateKey(storedKey);
-    if (response.valid) {
-      showSuccess(storedKey);
-      status.textContent = "";
-    } else {
-      chrome.storage.local.remove("licenseKey", () => {});
-      status.textContent = "❌ კოდი გაუქმებულია ან არასწორია.";
-      status.style.color = "red";
-      licenseScreen.classList.remove("hidden");
-      successScreen.classList.remove("active");
-      panelToggleContainer.classList.add("hidden");
+    const payload = await response.json();
+    if (!response.ok || !payload?.success) {
+      throw new Error(payload?.message || "ავტორიზაცია ვერ მოხერხდა.");
     }
-  });
-}
-checkStoredKey();
 
-// Handle manual activation
-document.getElementById("submitKey").addEventListener("click", async () => {
-  const keyInput = document.getElementById("licenseKey");
-  const key = keyInput.value.trim();
-
-  if (!key) {
-    status.textContent = "❌ შეიყვანეთ კოდი!";
-    status.style.color = "red";
-    return;
-  }
-
-  status.textContent = "⏳ ვამოწმებ...";
-  status.style.color = "orange";
-
-  const response = await validateKey(key);
-  if (!response) {
-    status.textContent = "❌ No response from server!";
-    status.style.color = "red";
-    return;
-  }
-
-  if (response.valid) {
-    status.textContent = "✅ გააქტიურებულია!";
-    status.style.color = "lightgreen";
-    chrome.storage.local.set({ licenseKey: key.toUpperCase() }, () => {
-      setTimeout(() => showSuccess(key.toUpperCase()), 250);
+    const now = Date.now();
+    await storageSet({
+      token: payload.token,
+      refreshToken: payload.refreshToken,
+      user: payload.user,
+      loginTime: now,
+      remember,
     });
-  } else {
-    status.textContent = response.message || "❌ კოდი არასწორია.";
-    status.style.color = "red";
+    populateMain(payload.user);
+    fadeTo(mainView);
+  } catch (error) {
+    showMessage(loginStatus, error.message || "ვერ შევძელით ავტორიზაცია.", true);
   }
+}
+
+async function verifyToken(token) {
+  try {
+    const response = await fetch(`${API_BASE}/verify`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) return null;
+    const payload = await response.json();
+    return payload?.valid ? payload.user : null;
+  } catch {
+    return null;
+  }
+}
+
+async function refreshToken(currentRefreshToken) {
+  try {
+    const response = await fetch(`${API_BASE}/refresh`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refreshToken: currentRefreshToken }),
+    });
+    if (!response.ok) throw new Error("Refresh failed");
+    const payload = await response.json();
+    if (!payload?.token || !payload?.refreshToken) {
+      throw new Error("Invalid refresh payload");
+    }
+    const now = Date.now();
+    await storageSet({
+      token: payload.token,
+      refreshToken: payload.refreshToken,
+      loginTime: now,
+    });
+    return payload;
+  } catch (error) {
+    await storageRemove(["token", "refreshToken", "loginTime", "user", "remember"]);
+    throw error;
+  }
+}
+
+function populateMain(user) {
+  const name = user?.name || user?.email || "მომხმარებელი";
+  mainUsername.textContent = `👤 შესული ხართ როგორც ${name}`;
+}
+
+async function initialize() {
+  showMessage(loginStatus, "");
+  showMessage(mainStatus, "");
+
+  const { token, refreshToken, loginTime, user } = await storageGet([
+    "token",
+    "refreshToken",
+    "loginTime",
+    "user",
+  ]);
+
+  if (!token) {
+    fadeTo(authView);
+    return;
+  }
+
+  const verifiedUser = await verifyToken(token);
+  if (!verifiedUser) {
+    await storageRemove(["token", "refreshToken", "loginTime", "user", "remember"]);
+    fadeTo(authView);
+    return;
+  }
+
+  try {
+    if (typeof loginTime === "number" && Date.now() - loginTime > REFRESH_INTERVAL_MS) {
+      const refreshed = await refreshToken(refreshToken);
+      if (refreshed?.user) {
+        await storageSet({ user: refreshed.user });
+        populateMain(refreshed.user);
+      } else {
+        populateMain(verifiedUser);
+      }
+    } else {
+      await storageSet({ user: verifiedUser });
+      populateMain(verifiedUser);
+    }
+    fadeTo(mainView);
+  } catch (error) {
+    console.warn("Token refresh failed:", error);
+    fadeTo(authView);
+  }
+}
+
+async function handleLogout() {
+  await storageRemove(["token", "refreshToken", "loginTime", "user", "remember"]);
+  showMessage(mainStatus, "სესია დასრულდა.", false);
+  setTimeout(() => {
+    showMessage(mainStatus, "");
+    fadeTo(authView);
+  }, 800);
+}
+
+function notifyPanel(target) {
+  chrome.runtime.sendMessage({ action: "focusPanel", target }).catch(() => {});
+}
+
+loginForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const username = event.target.username.value.trim();
+  const password = event.target.password.value;
+  const remember = rememberCheckbox.checked;
+  if (!username || !password) {
+    showMessage(loginStatus, "გთხოვთ შეავსოთ ორივე ველი.", true);
+    return;
+  }
+  showMessage(loginStatus, "");
+  await login(username, password, remember);
 });
 
-// ==== Panel toggle ====
-chrome.storage.local.get(["licenseKey"], (res) => {
-  if (res.licenseKey) panelToggleContainer.classList.remove("hidden");
+openWaybillsBtn.addEventListener("click", () => {
+  notifyPanel("waybills");
+  showMessage(mainStatus, "ზედნადებების პანელი გახსნილია.", false);
+  setTimeout(() => showMessage(mainStatus, ""), 1500);
 });
 
-chrome.storage.local.get(["panelEnabled"], (res) => {
-  toggleCheckbox.checked = res.panelEnabled ?? true;
+openDeclarationsBtn.addEventListener("click", () => {
+  notifyPanel("declarations");
+  showMessage(mainStatus, "დეკლარაციების პანელი გახსნილია.", false);
+  setTimeout(() => showMessage(mainStatus, ""), 1500);
 });
 
-toggleCheckbox.addEventListener("change", () => {
-  const enabled = toggleCheckbox.checked;
-  chrome.storage.local.set({ panelEnabled: enabled });
-  chrome.runtime.sendMessage({ action: enabled ? "enablePanel" : "disablePanel" });
-});
+logoutBtn.addEventListener("click", handleLogout);
+
+window.addEventListener("DOMContentLoaded", initialize);

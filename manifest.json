@@ -2,7 +2,7 @@
   "name": "Amnairi RS Assistant",
   "version": "1.4",
   "manifest_version": 3,
-  "description": "Automates RS.ge invoice processing with license validation.",
+  "description": "Automates RS.ge declarations with secure token-based access and multi-account support.",
   "permissions": ["storage", "debugger", "notifications", "alarms"],
   "host_permissions": [
     "https://server-m02g.onrender.com/*",

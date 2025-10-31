@@ -1,660 +1,1654 @@
-// Only run after license is present
-chrome.storage.local.get(["licenseKey"], (res) => {
-  if (!res.licenseKey) {
-    console.log("⛔ No valid license — automation blocked.");
-    return;
+(function () {
+  "use strict";
+
+  const PANEL_HOST_ID = "amnairi-rs-panel-host";
+  const STORAGE_PANEL_STATE = "panelState";
+  const POSITION_KEY = "amnairi_panel_position";
+
+    const MONTHS = [
+    { value: "01", label: "იანვარი" },
+    { value: "02", label: "თებერვალი" },
+    { value: "03", label: "მარტი" },
+    { value: "04", label: "აპრილი" },
+    { value: "05", label: "მაისი" },
+    { value: "06", label: "ივნისი" },
+    { value: "07", label: "ივლისი" },
+    { value: "08", label: "აგვისტო" },
+    { value: "09", label: "სექტემბერი" },
+    { value: "10", label: "ოქტომბერი" },
+    { value: "11", label: "ნოემბერი" },
+    { value: "12", label: "დეკემბერი" },
+  ];
+
+      const state = {
+    account: null,
+    monthKey: getCurrentMonthKey(),
+    total: null,
+    savedPanelState: {},
+    panelEnabled: true,
+    isRunning: false,
+    declarationRunning: false,
+    invoiceAutomationActive: false,
+    activeTab: "invoices",
+    declarationCancelRequested: false,
+    currentLogScope: "invoices",
+  };
+
+  const refs = {};
+
+  waitForDom().then(initialize).catch(console.error);
+
+  async function initialize() {
+    await loadPanelState();
+    const panelPref = await storageGet("panelEnabled");
+    state.panelEnabled = panelPref?.panelEnabled !== false;
+    await updateAccount();
+    injectPanel();
+    applySavedPanelState();
+    attachStorageListeners();
+    attachRuntimeListeners();
+
+    // Attach debugger once per tab (existing behaviour)
+    chrome.runtime.sendMessage({ action: "attachDebugger" });
   }
-  console.log("✅ License found — automation running.");
-  injectPanel();
-});
 
-// Ask background to attach debugger ONCE for this tab
-chrome.runtime.sendMessage({ action: "attachDebugger" });
-
-// Guard to prevent overlapping runs
-let automationInProgress = false;
-
-// ----------------- UI + Automation -----------------
-function injectPanel() {
-  if (!document.body) {
-    requestAnimationFrame(injectPanel);
-    return;
+  function waitForDom() {
+    if (document.readyState === "complete" || document.readyState === "interactive") {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      document.addEventListener("DOMContentLoaded", resolve, { once: true });
+    });
   }
 
-  // ---- PANEL HTML ----
-  const panel = document.createElement("div");
-  panel.id = "rs-panel";
-  panel.innerHTML = `
-    <div id="rs-panel-header">
-      <span>Amnairi RS Assistant</span>
-      <span id="rs-toggle">&#9660;</span>
-    </div>
-    <div id="rs-panel-body">
-      <div id="rs-buttons">
-        <button id="rs-start"><span>▶</span> Start</button>
-        <button id="rs-stop"><span>⏹</span> Stop</button>
-      </div>
-      <div id="rs-options">
-        <label title="ჩართვის შემთხვევაში ერთი ორგანიზაციის ყველა ზედნადები ერთიანად იგზავნება">
-          <input type="checkbox" id="rs-use-checkall" />
-          ყველას მონიშნვა, ერთ ორგანიზაციაზე
-        </label>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(panel);
+  function getCurrentMonthKey() {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  }
 
-  // ---- Extra styles for initial view and transitions ----
-  (function ensureExtraStyles() {
-    if (document.getElementById('rs-extra-styles')) return;
-    const style = document.createElement('style');
-    style.id = 'rs-extra-styles';
-    style.textContent = `
-      #rs-panel-body { overflow: visible !important; }
-      #rs-panel-body.collapsed { overflow: hidden !important; }
-      #rs-buttons, #rs-buttons-initial, #rs-buttons-declare { overflow: visible; }
-      #rs-buttons button, #rs-buttons-initial button, #rs-buttons-declare button, #rs-dec-back, .rs-dec-chip { outline: none; }
+  function getMonthByValue(value) {
+    return MONTHS.find((month) => month.value === value) ?? MONTHS[0];
+  }
 
-      .rs-section { transition: none; }
-      .rs-visible { display: block; }
-      .rs-hidden { display: none; }
+  function formatMonthLabel(monthKey) {
+    const [year, month] = monthKey.split("-");
+    const monthInfo = getMonthByValue(month);
+    return `${monthInfo.label} ${year}`;
+  }
 
-      #rs-buttons-initial button,
-      #rs-buttons-declare button {
+  function formatCurrency(amount) {
+    const formatter = new Intl.NumberFormat("ka-GE", {
+      style: "currency",
+      currency: "GEL",
+      minimumFractionDigits: 2,
+    });
+    return formatter.format(amount ?? 0);
+  }
+
+  async function loadPanelState() {
+    const data = await storageGet(STORAGE_PANEL_STATE);
+    state.savedPanelState = data?.[STORAGE_PANEL_STATE] ?? {};
+  }
+
+  function applySavedPanelState() {
+    if (!state.account?.token) return;
+    const saved = state.savedPanelState[state.account.token];
+    if (saved?.monthKey) {
+      state.monthKey = saved.monthKey;
+    }
+    if (typeof saved?.total === "number") {
+      state.total = saved.total;
+    }
+    if (saved?.activeTab) {
+      state.activeTab = saved.activeTab === "declarations" ? "declarations" : "invoices";
+    }
+    updateCalendarDisplay();
+    updateTotalDisplay();
+    setActiveTab(state.activeTab, { skipPersist: true, skipPause: true });
+  }
+
+    if (typeof saved?.total === "number") {
+      state.total = saved.total;
+    }
+    updateCalendarDisplay();
+    updateTotalDisplay();
+  }
+
+ ), function persistPanelState() {
+    if (!state.account?.token) return;
+    const next = { ...state.savedPanelState };
+    next[state.account.token] = {
+      monthKey: state.monthKey,
+      total: state.total,
+      activeTab: state.activeTab,
+    };
+    state.savedPanelState = next;
+    storageSet({ [STORAGE_PANEL_STATE]: next });
+  }
+
+  async function updateAccount() {
+    const account = await sendMessage({ action: "getActiveAccount" });
+    if (account?.token) {
+      state.account = account;
+    } else {
+      state.account = null;
+    }
+  }
+
+    function injectPanel() {
+    if (document.getElementById(PANEL_HOST_ID)) return;
+    const host = document.createElement("div");
+    host.id = PANEL_HOST_ID;
+    document.documentElement.appendChild(host);
+
+    const shadow = host.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = getPanelStyles();
+
+    const container = document.createElement("div");
+    container.className = "rs-panel rs-panel-root";
+    container.innerHTML = getPanelMarkup();
+
+    shadow.appendChild(style);
+    shadow.appendChild(container);
+
+    refs.shadow = shadow;
+    refs.container = container;
+    refs.container.classList.toggle("rs-panel-hidden", !state.panelEnabled);
+    refs.handle = container.querySelector(".rs-panel-handle");
+    refs.accountLabel = container.querySelector(".rs-panel-account-label");
+    refs.loginHint = container.querySelector(".rs-panel-account-hint");
+    refs.tabs = Array.from(container.querySelectorAll(".rs-tab"));
+    refs.sections = {
+      invoices: container.querySelector(".rs-section-invoices"),
+      declarations: container.querySelector(".rs-section-declarations"),
+    };
+    refs.monthSelect = container.querySelector(".rs-panel-month-select");
+    refs.yearSelect = container.querySelector(".rs-panel-year-select");
+    refs.totalValue = container.querySelector("#rs-total-value");
+    refs.invoiceStartBtn = container.querySelector("#rs-invoice-start");
+    refs.invoiceStopBtn = container.querySelector("#rs-invoice-stop");
+    refs.declarationStartBtn = container.querySelector("#rs-declaration-start");
+    refs.invoiceLog = container.querySelector("#rs-invoice-log");
+    refs.declarationLog = container.querySelector("#rs-declaration-log");
+    refs.checkAll = container.querySelector("#rs-use-checkall");
+
+    populateCalendarSelectors();
+    restorePanelPosition();
+    bindPanelEvents();
+    updateAccountDisplay();
+    updateCalendarDisplay();
+    updateTotalDisplay();
+    updateButtons();
+    setActiveTab(state.activeTab, { skipPersist: true, skipPause: true });
+  }
+
+  return `
+        border-radius: 999px;
+        font-size: 11px;
+        letter-spacing: 0.04em;
+      };
+
+      .rs-panel-account {
         display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 6px;
-        margin-bottom: 10px;
-        width: 100%;
-        padding: 9px 12px;
-        background: linear-gradient(135deg, #0066cc, #004999);
-        border: none;
-        border-radius: 12px;
-        color: white;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .rs-panel-account-label {
         font-weight: 600;
         font-size: 13px;
-        transition: all 0.25s ease;
-        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
-        cursor: pointer;
-      }
-      #rs-buttons-initial button:hover,
-      #rs-buttons-declare button:hover {
-        background: linear-gradient(135deg, #005bb5, #003f82);
-        transform: translateY(-2px) scale(1.03);
-        box-shadow: 0 6px 12px rgba(0,0,0,0.25);
-      }
-      #rs-buttons-initial button:active,
-      #rs-buttons-declare button:active {
-        transform: translateY(0) scale(0.98);
       }
 
-      #rs-dec-selector {
-        margin: 6px 0 4px;
-        padding: 12px;
-        border-radius: 16px;
-        background: linear-gradient(140deg, rgba(0,102,204,0.12), rgba(0,102,204,0.02));
-        border: 1px solid rgba(0,102,204,0.18);
-        box-shadow: 0 10px 22px rgba(17, 76, 140, 0.12);
-      }
-      .rs-dec-group { margin-bottom: 12px; }
-      .rs-dec-group:last-of-type { margin-bottom: 0; }
-      .rs-dec-group-title {
+      .rs-panel-login-hint {
+        color: #9ca3af;
         font-size: 12px;
-        font-weight: 600;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: #004999;
-        margin-bottom: 6px;
+        line-height: 1.2;
       }
-      .rs-dec-row {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(48px, 1fr));
+
+      .rs-panel-month-trigger {
+        padding: 8px 10px;
+        border-radius: 12px;
+        background: #f6f7fb;
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
+        cursor: pointer;
+        transition: background 0.2s ease, border 0.2s ease;
+      }
+
+      .rs-panel-month-trigger:hover {
+        background: #eef2ff;
+        border-color: rgba(37, 99, 235, 0.3);
+      }
+
+      .rs-panel-month-label {
+        font-weight: 600;
+      }
+
+      .rs-panel-calendar-dropdown {
+        position: absolute;
+        top: 72px;
+        left: 0;
+        width: 150px;
+        background: #ffffff;
+        border-radius: 14px;
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(-6px);
+        transition: opacity 0.18s ease, transform 0.18s ease;
+        background-clip: padding-box;
+      }
+
+      .rs-panel-calendar-dropdown.open {
+        opacity: 1;
+        pointer-events: auto;
+        transform: translateY(0);
+      }
+
+      .rs-panel-calendar-dropdown label {
+        font-size: 11px;
+        text-transform: uppercase;
+        color: #6b7280;
+        letter-spacing: 0.06em;
+      }
+
+      .rs-panel-calendar-dropdown select {
+        padding: 6px 8px;
+        border-radius: 10px;
+        border: 1px solid rgba(37, 99, 235, 0.2);
+        background: #f3f4f6;
+        cursor: pointer;
+        transition: border 0.2s ease, background 0.2s ease;
+      }
+
+      .rs-panel-calendar-dropdown select:focus {
+        border-color: rgba(37, 99, 235, 0.5);
+        background: #fff;
+      }
+
+      .rs-panel-total {
+        padding: 10px;
+        border-radius: 12px;
+        background: rgba(16, 185, 129, 0.12);
+        border: 1px solid rgba(16, 185, 129, 0.18);
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .rs-panel-total-label {
+        font-size: 11px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #047857;
+      }
+
+      .rs-panel-total-value {
+        font-weight: 700;
+        font-size: 15px;
+        color: #047857;
+      }
+
+      .rs-panel-divider {
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(37, 99, 235, 0.3), transparent);
+      }
+
+      .rs-panel-actions {
+        display: flex;
+        flex-direction: column;
         gap: 8px;
       }
-      .rs-dec-chip {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        padding: 8px 0;
+
+      .rs-panel-button {
+        padding: 9px 10px;
         border-radius: 12px;
-        border: 1px solid rgba(0,102,204,0.25);
-        background: #fff;
-        color: #004999;
-        font-weight: 600;
-        font-size: 12px;
+        background: #f9fafb;
+        border: 1px solid rgba(15, 23, 42, 0.1);
+        text-align: center;
         cursor: pointer;
-        transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
-        box-shadow: 0 3px 8px rgba(0,0,0,0.12);
-      }
-      .rs-dec-chip:hover {
-        transform: translateY(-2px) scale(1.04);
-        box-shadow: 0 8px 16px rgba(0,102,204,0.25);
-      }
-      .rs-dec-chip.active {
-        background: linear-gradient(135deg, #0066cc, #004999);
-        color: #fff;
-        border-color: transparent;
-        box-shadow: 0 10px 20px rgba(0,102,204,0.4);
+        font-weight: 600;
+        transition: transform 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
       }
 
-      #rs-dec-back {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 100%;
-        padding: 10px 12px;
-        margin-top: 10px;
-        background: #e9eef6;
-        color: #003f82;
-        font-weight: 600;
-        font-size: 13px;
-        border: none;
-        border-radius: 12px;
-        transition: background 0.2s ease, transform 0.2s ease;
-        cursor: pointer;
-      }
-      #rs-dec-back:hover {
-        background: #d7e3f6;
+      .rs-panel-button:hover {
+        background: #eef2ff;
+        box-shadow: 0 10px 20px rgba(37, 99, 235, 0.18);
         transform: translateY(-1px);
       }
 
-      #rs-dec-log {
-        margin-top: 10px;
-        padding: 10px;
-        min-height: 80px;
-        max-height: 180px;
-        overflow: auto;
-        background: #efefef;
-        border: 1px solid #e6e6e6;
-        border-radius: 12px;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
-        font-size: 12px;
-        line-height: 1.4;
-        color: #222;
+      .rs-panel-button:active {
+        transform: translateY(0);
       }
-      #rs-dec-log div + div { margin-top: 4px; }
-    `;
-    document.head.appendChild(style);
-  })();
 
-  // ---- Apply initial visibility + react to popup toggle ----
-  chrome.storage.local.get(["panelEnabled"], ({ panelEnabled }) => {
-    const visible = panelEnabled !== false; // default: visible
-    panel.style.display = visible ? "block" : "none";
-  });
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === "local" && changes.panelEnabled) {
-      const visible = changes.panelEnabled.newValue !== false;
-      panel.style.display = visible ? "block" : "none";
-    }
-  });
+      .rs-panel-button[disabled] {
+        cursor: not-allowed;
+        opacity: 0.5;
+        box-shadow: none;
+        transform: none;
+      }
 
-  // ---- Restore position ----
-  (function restorePanelPosition() {
-    const savedPos = JSON.parse(localStorage.getItem("rs_panel_position"));
-    if (savedPos && savedPos.left && savedPos.top) {
-      panel.style.left = savedPos.left;
-      panel.style.top = savedPos.top;
-    } else {
-      panel.style.left = "20px";
-      panel.style.top = "20px";
-    }
-  })();
+      .rs-panel-start {
+        background: linear-gradient(135deg, #2563eb, #1d4ed8);
+        color: #fff;
+        border: none;
+        box-shadow: 0 12px 24px rgba(37, 99, 235, 0.28);
+      }
 
-  // ---- Restore collapse state ----
-  const toggleBtn = document.getElementById("rs-toggle");
-  const body = document.getElementById("rs-panel-body");
+      .rs-panel-start:hover {
+        box-shadow: 0 16px 30px rgba(37, 99, 235, 0.35);
+      }
 
-  // ---- Build initial state and wrap existing content ----
-  try {
-    const buttonsEl = document.getElementById("rs-buttons");
-    const optionsEl = document.getElementById("rs-options");
-    if (buttonsEl && optionsEl && body) {
-      const mainSection = document.createElement("div");
-      mainSection.id = "rs-main";
-      mainSection.className = "rs-section rs-hidden";
-      mainSection.appendChild(buttonsEl);
-      mainSection.appendChild(optionsEl);
+      .rs-panel-stop {
+        background: rgba(248, 113, 113, 0.12);
+        color: #b91c1c;
+        border: 1px solid rgba(248, 113, 113, 0.3);
+      }
 
-      const initialSection = document.createElement("div");
-      initialSection.id = "rs-initial";
-      initialSection.className = "rs-section rs-visible";
-      initialSection.innerHTML = `
-        <div id="rs-buttons-initial">
-          <button id="rs-btn-invoices">ზედნადებები</button>
-          <button id="rs-btn-declaration">დეკლარაცია</button>
+      .rs-panel-log {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .rs-panel-log-title {
+        font-weight: 600;
+        font-size: 12px;
+        color: #374151;
+      }
+
+      .rs-panel-log-lines {
+        max-height: 120px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding-right: 2px;
+      }
+
+      .rs-panel-log-line {
+        font-size: 12px;
+        line-height: 1.3;
+        display: flex;
+        gap: 6px;
+        align-items: flex-start;
+      }
+
+      .rs-panel-log-line::before {
+        content: "•";
+        font-weight: 700;
+      }
+
+      .rs-panel-log-line--info {
+        color: #1f2937;
+      }
+
+      .rs-panel-log-line--ok {
+        color: #047857;
+      }
+
+      .rs-panel-log-line--warn {
+        color: #d97706;
+      }
+
+      .rs-panel-log-line--err {
+        color: #b91c1c;
+      }
+
+      .rs-panel-root.rs-panel-running .rs-panel-start {
+        opacity: 0.5;
+        pointer-events: none;
+      }
+    ;`
+  
+
+  function getPanelMarkup() {
+    return `
+      <div class="rs-panel-handle">
+        <div class="rs-panel-brand">
+          <div class="rs-panel-title">Amnairi</div>
+          <div class="rs-panel-sub">RS Assistant</div>
         </div>
-      `;
-
-      body.appendChild(initialSection);
-      body.appendChild(mainSection);
-
-      const declareSection = document.createElement("div");
-      declareSection.id = "rs-declare";
-      declareSection.className = "rs-section rs-hidden";
-
-      const declareButtonsWrap = document.createElement("div");
-      declareButtonsWrap.id = "rs-buttons-declare";
-      const declareStartButton = document.createElement("button");
-      declareStartButton.id = "rs-dec-start";
-      declareStartButton.textContent = "Start";
-      declareButtonsWrap.appendChild(declareStartButton);
-
-      const declareSelector = document.createElement("div");
-      declareSelector.id = "rs-dec-selector";
-
-      const monthGroup = document.createElement("div");
-      monthGroup.className = "rs-dec-group";
-      const monthTitle = document.createElement("div");
-      monthTitle.className = "rs-dec-group-title";
-      monthTitle.textContent = "თვე";
-      const monthRow = document.createElement("div");
-      monthRow.className = "rs-dec-row";
-      monthRow.id = "rs-dec-month-row";
-      monthGroup.appendChild(monthTitle);
-      monthGroup.appendChild(monthRow);
-
-      const yearGroup = document.createElement("div");
-      yearGroup.className = "rs-dec-group";
-      const yearTitle = document.createElement("div");
-      yearTitle.className = "rs-dec-group-title";
-      yearTitle.textContent = "წელი";
-      const yearRow = document.createElement("div");
-      yearRow.className = "rs-dec-row";
-      yearRow.id = "rs-dec-year-row";
-      yearGroup.appendChild(yearTitle);
-      yearGroup.appendChild(yearRow);
-
-      declareSelector.appendChild(monthGroup);
-      declareSelector.appendChild(yearGroup);
-
-      const decLogContainer = document.createElement("div");
-      decLogContainer.id = "rs-dec-log";
-      decLogContainer.setAttribute("aria-live", "polite");
-
-      const backWrap = document.createElement("div");
-      const backButton = document.createElement("button");
-      backButton.id = "rs-dec-back";
-      backButton.textContent = "⬅ დაბრუნება";
-      backWrap.appendChild(backButton);
-
-      declareSection.appendChild(declareButtonsWrap);
-      declareSection.appendChild(declareSelector);
-      declareSection.appendChild(decLogContainer);
-      declareSection.appendChild(backWrap);
-
-      body.appendChild(declareSection);
-
-      const initialInvoicesBtn = document.getElementById("rs-btn-invoices");
-      const initialDeclarationBtn = document.getElementById("rs-btn-declaration");
-      if (initialInvoicesBtn) initialInvoicesBtn.textContent = "ზედნადებები";
-      if (initialDeclarationBtn) initialDeclarationBtn.textContent = "დეკლარაცია";
-    }
-  } catch (e) {
-    console.warn("RS panel: initial/main section setup failed", e);
-  }
-  (function restorePanelCollapse() {
-    const collapsed = localStorage.getItem("rs_panel_collapsed") === "true";
-    if (collapsed) {
-      body.style.display = "none";
-      toggleBtn.style.transform = "rotate(-90deg)";
-    }
-  })();
-  toggleBtn.addEventListener("click", () => {
-    const hidden = body.style.display === "none";
-    body.style.display = hidden ? "block" : "none";
-    toggleBtn.style.transform = hidden ? "rotate(0deg)" : "rotate(-90deg)";
-    localStorage.setItem("rs_panel_collapsed", hidden ? "false" : "true");
-  });
-
-  // ---- Restore Check-All option ----
-  const useCheckAllEl = document.getElementById("rs-use-checkall");
-  const savedCheckAll = localStorage.getItem("rs_use_checkall");
-  const useCheckAll = savedCheckAll === null ? true : savedCheckAll === "true";
-  useCheckAllEl.checked = useCheckAll;
-  useCheckAllEl.addEventListener("change", () => {
-    localStorage.setItem("rs_use_checkall", String(useCheckAllEl.checked));
-  });
-
-  // ---- State switching helpers ----
-  const initialSection = document.getElementById("rs-initial");
-  const mainSection = document.getElementById("rs-main");
-  const declareSection = document.getElementById("rs-declare");
-  function showSection(which) {
-    if (!initialSection || !mainSection || !declareSection) return;
-    const map = { initial: initialSection, main: mainSection, declare: declareSection };
-    [initialSection, mainSection, declareSection].forEach((section) => {
-      const active = section === map[which];
-      section.classList.toggle("rs-visible", active);
-      section.classList.toggle("rs-hidden", !active);
-    });
+        <div class="rs-panel-account">
+          <div class="rs-panel-account-label">??????????? ?? ????????</div>
+          <div class="rs-panel-account-hint">??????, ??????? ??????????? ??????????? ?????????.</div>
+        </div>
+      </div>
+      <div class="rs-tabs">
+        <button type="button" class="rs-tab active" data-tab="invoices">???????????</button>
+        <button type="button" class="rs-tab" data-tab="declarations">????????????</button>
+      </div>
+      <div class="rs-panel-body">
+        <section class="rs-panel-section rs-section-invoices active">
+          <div class="rs-block">
+            <label class="rs-checkbox">
+              <input type="checkbox" id="rs-use-checkall" />
+              <span>?????? ????????</span>
+            </label>
+          </div>
+          <div class="rs-actions">
+            <button type="button" class="rs-btn rs-btn-primary" id="rs-invoice-start">?? ???????</button>
+            <button type="button" class="rs-btn rs-btn-muted" id="rs-invoice-stop">? ????????</button>
+          </div>
+          <div class="rs-block">
+            <div class="rs-block-title">?? ????</div>
+            <div class="rs-log" id="rs-invoice-log"></div>
+          </div>
+        </section>
+        <section class="rs-panel-section rs-section-declarations">
+          <div class="rs-block rs-calendar">
+            <label>
+              ???
+              <select id="rs-panel-month" class="rs-panel-month-select"></select>
+            </label>
+            <label>
+              ????
+              <select id="rs-panel-year" class="rs-panel-year-select"></select>
+            </label>
+          </div>
+          <div class="rs-block rs-total">
+            <div class="rs-total-label">?? ????????? ???</div>
+            <div class="rs-total-value" id="rs-total-value">? 0.00</div>
+          </div>
+          <button type="button" class="rs-btn rs-btn-primary" id="rs-declaration-start">?? ??????????? ???????</button>
+          <div class="rs-block">
+            <div class="rs-block-title">?? ????</div>
+            <div class="rs-log" id="rs-declaration-log"></div>
+          </div>
+        </section>
+      </div>
+    `;
   }
 
-  // ---- Initial and declaration controls ----
-  const invoicesBtn = document.getElementById("rs-btn-invoices");
-  const declarationBtn = document.getElementById("rs-btn-declaration");
-  const decBackBtn = document.getElementById("rs-dec-back");
-  const decStartBtn = document.getElementById("rs-dec-start");
-  const decMonthRow = document.getElementById("rs-dec-month-row");
-  const decYearRow = document.getElementById("rs-dec-year-row");
-  const decLogBox = document.getElementById("rs-dec-log");
-
-  const MONTHS = [
-    { index: 0, abbr: "იან", full: "იანვარი" },
-    { index: 1, abbr: "თებ", full: "თებერვალი" },
-    { index: 2, abbr: "მარ", full: "მარტი" },
-    { index: 3, abbr: "აპრ", full: "აპრილი" },
-    { index: 4, abbr: "მაი", full: "მაისი" },
-    { index: 5, abbr: "ივნ", full: "ივნისი" },
-    { index: 6, abbr: "ივლ", full: "ივლისი" },
-    { index: 7, abbr: "აგვ", full: "აგვისტო" },
-    { index: 8, abbr: "სექ", full: "სექტემბერი" },
-    { index: 9, abbr: "ოქტ", full: "ოქტომბერი" },
-    { index: 10, abbr: "ნოე", full: "ნოემბერი" },
-    { index: 11, abbr: "დეკ", full: "დეკემბერი" }
-  ];
-
-  let selectedMonth = null;
-  let selectedYear = null;
-  let monthChips = [];
-  let yearChips = [];
-
-  function setActiveChips(chips, key, value) {
-    chips.forEach((chip) => {
-      const isActive = chip.dataset[key] === value;
-      chip.classList.toggle("active", isActive);
-      chip.setAttribute("aria-pressed", String(isActive));
-    });
-  }
-
-  function setSelectedMonth(value) {
-    selectedMonth = value;
-    setActiveChips(monthChips, "month", value);
-  }
-
-  function setSelectedYear(value) {
-    selectedYear = value;
-    setActiveChips(yearChips, "year", value);
-  }
-
-  function setupDateSelector() {
-    if (!decMonthRow || !decYearRow) return;
-
-    decMonthRow.innerHTML = "";
-    decYearRow.innerHTML = "";
-    monthChips = [];
-    yearChips = [];
-
+  function populateCalendarSelectors() {
+    if (!refs.monthSelect || !refs.yearSelect) return;
+    refs.monthSelect.innerHTML = "";
     MONTHS.forEach((month) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "rs-dec-chip";
-      btn.dataset.month = month.abbr;
-      btn.textContent = month.abbr;
-      btn.title = month.full;
-      btn.addEventListener("click", () => setSelectedMonth(month.abbr));
-      decMonthRow.appendChild(btn);
-      monthChips.push(btn);
+      const option = document.createElement("option");
+      option.value = month.value;
+      option.textContent = month.label;
+      refs.monthSelect.appendChild(option);
     });
 
-    const now = new Date();
-    const currentYear = now.getFullYear();
-    const years = [];
-    const minYear = Math.min(2023, currentYear - 1);
-    const maxYear = Math.max(currentYear + 1, 2026);
-    for (let year = minYear; year <= maxYear; year++) {
-      years.push(String(year));
+    const currentYear = new Date().getFullYear();
+    refs.yearSelect.innerHTML = "";
+    for (let year = currentYear - 2; year <= currentYear + 2; year += 1) {
+      const option = document.createElement("option");
+      option.value = String(year);
+      option.textContent = String(year);
+      refs.yearSelect.appendChild(option);
+    }
+  }
+
+
+    function bindPanelEvents() {
+    if (refs.tabs) {
+      refs.tabs.forEach((tab) => {
+        tab.addEventListener("click", () => {
+          const target = tab.dataset.tab === "declarations" ? "declarations" : "invoices";
+          setActiveTab(target);
+        });
+      });
     }
 
-    years.forEach((year) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "rs-dec-chip";
-      btn.dataset.year = year;
-      btn.textContent = year;
-      btn.addEventListener("click", () => setSelectedYear(year));
-      decYearRow.appendChild(btn);
-      yearChips.push(btn);
-    });
+    if (refs.monthSelect) {
+      refs.monthSelect.addEventListener("change", () => {
+        const [year] = state.monthKey.split("-");
+        state.monthKey = `${year}-${refs.monthSelect.value}`;
+        updateCalendarDisplay();
+        persistPanelState();
+      });
+    }
 
-    const defaultMonth = MONTHS[now.getMonth()]?.abbr ?? MONTHS[0].abbr;
-    const defaultYear = years.includes(String(currentYear)) ? String(currentYear) : years[years.length - 1];
-    setSelectedMonth(defaultMonth);
-    setSelectedYear(defaultYear);
+    if (refs.yearSelect) {
+      refs.yearSelect.addEventListener("change", () => {
+        const [, month] = state.monthKey.split("-");
+        state.monthKey = `${refs.yearSelect.value}-${month}`;
+        updateCalendarDisplay();
+        persistPanelState();
+      });
+    }
+
+    if (refs.invoiceStartBtn) {
+      refs.invoiceStartBtn.addEventListener("click", handleInvoiceStart);
+    }
+
+    if (refs.invoiceStopBtn) {
+      refs.invoiceStopBtn.addEventListener("click", handleInvoiceStop);
+    }
+
+    if (refs.declarationStartBtn) {
+      refs.declarationStartBtn.addEventListener("click", handleDeclarationStart);
+    }
+
+    if (refs.checkAll) {
+      const saved = localStorage.getItem("rs_use_checkall");
+      const useCheckAll = saved === null ? true : saved === "true";
+      refs.checkAll.checked = useCheckAll;
+      refs.checkAll.addEventListener("change", () => {
+        localStorage.setItem("rs_use_checkall", String(refs.checkAll.checked));
+      });
+    }
+
+    setupDragging();
   }
-  setupDateSelector();
 
-  function logDec(msg) {
-    if (!decLogBox) return;
+  function updateAccountDisplay() {
+    if (!refs.accountLabel) return;
+    if (state.account?.token) {
+      refs.accountLabel.textContent = state.account.label || "Amnairi";
+      refs.loginHint.textContent = "??????? ????? ??????.";
+      refs.loginHint.style.color = "#5d6a7d";
+    } else {
+      refs.accountLabel.textContent = "??????????? ?? ????????";
+      refs.loginHint.textContent = "??????, ??????? ??????????? ??????????? ?????????.";
+      refs.loginHint.style.color = "#b91c1c";
+    }
+  }
+
+
+  function updateCalendarDisplay() {
+    if (!refs.monthSelect || !refs.yearSelect) return;
+    const [year, month] = state.monthKey.split("-");
+    refs.monthSelect.value = month;
+    refs.yearSelect.value = year;
+  }
+
+
+  function updateTotalDisplay() {
+    if (!refs.totalValue) return;
+    const total = typeof state.total === "number" ? state.total : 0;
+    refs.totalValue.textContent = formatCurrency(total);
+  }
+
+  function updateButtons() {
+    const hasAccount = Boolean(state.account?.token);
+    if (refs.invoiceStartBtn) {
+      refs.invoiceStartBtn.disabled = !hasAccount || state.isRunning;
+    }
+    if (refs.invoiceStopBtn) {
+      refs.invoiceStopBtn.disabled = !state.isRunning;
+    }
+    if (refs.declarationStartBtn) {
+      refs.declarationStartBtn.disabled = !hasAccount || state.declarationRunning;
+    }
+    if (refs.container) {
+      refs.container.classList.toggle("rs-panel-running", state.isRunning);
+    }
+  }
+
+
+    function pauseAutomation(shouldLog = false) {
+    let stoppedInvoices = false;
+    let stoppedDeclarations = false;
+
+    if (state.isRunning) {
+      state.invoiceAutomationActive = false;
+      state.isRunning = false;
+      stoppedInvoices = true;
+    }
+
+    if (state.declarationRunning) {
+      state.declarationCancelRequested = true;
+      stoppedDeclarations = true;
+    }
+
+    if (shouldLog && stoppedInvoices) {
+      pushLog("warn", "????????????? ???????.", "invoices");
+    }
+    if (shouldLog && stoppedDeclarations) {
+      pushLog("warn", "??????????? ??????? ???????.", "declarations");
+    }
+
+    updateButtons();
+  }
+
+  function setActiveTab(tab, options = {}) {
+    const target = tab === "declarations" ? "declarations" : "invoices";
+    if (target === state.activeTab && !options.force) return;
+
+    if (!options.skipPause) {
+      pauseAutomation(true);
+    }
+
+    state.activeTab = target;
+
+    if (refs.tabs) {
+      refs.tabs.forEach((tabEl) => {
+        tabEl.classList.toggle("active", tabEl.dataset.tab === target);
+      });
+    }
+
+    if (refs.sections) {
+      Object.entries(refs.sections).forEach(([key, section]) => {
+        if (section) {
+          section.classList.toggle("active", key === target);
+        }
+      });
+    }
+
+    if (!options.skipPersist) {
+      persistPanelState();
+    }
+  }
+  function pushLog(type, message, scope) {
+    const targetScope = scope || state.currentLogScope || "invoices";
+    const logElement = targetScope === "declarations" ? refs.declarationLog : refs.invoiceLog;
+    if (!logElement) return;
     const line = document.createElement("div");
-    line.textContent = msg;
-    decLogBox.appendChild(line);
-    decLogBox.scrollTop = decLogBox.scrollHeight;
+    line.className = `rs-log-entry ${type}`;
+    line.textContent = message;
+    logElement.appendChild(line);
+    const maxEntries = 80;
+    while (logElement.children.length > maxEntries) {
+      logElement.removeChild(logElement.firstChild);
+    }
+    logElement.scrollTop = logElement.scrollHeight;
   }
 
-  invoicesBtn?.addEventListener("click", () => showSection("main"));
-  declarationBtn?.addEventListener("click", () => showSection("declare"));
-  decBackBtn?.addEventListener("click", () => showSection("initial"));
 
-  // ---- Declaration automation ----
-  let declarationInProgress = false;
+    async function handleInvoiceStart() {
+    if (state.isRunning || !state.account?.token) return;
+    state.currentLogScope = "invoices";
+    state.isRunning = true;
+    state.invoiceAutomationActive = true;
+    state.currentLogScope = "invoices";
+    updateButtons();
+    pushLog("info", "???????????? ????????????? ??????.", "invoices");
 
-  async function runDeclarationAutomation(targetMonth, targetYear) {
-    if (declarationInProgress) return;
-    declarationInProgress = true;
+    try {
+      await runInvoiceAutomation();
+      pushLog("ok", "???????????? ????????????? ????????.", "invoices");
+    } catch (err) {
+      pushLog("err", err?.message || "???????????? ????????????? ??????? ????????.", "invoices");
+    } finally {
+      state.isRunning = false;
+      updateButtons();
+    }
+  }
+
+  function handleInvoiceStop() {
+    if (!state.isRunning && !state.declarationRunning) return;
+    pauseAutomation(true);
+  }
+
+  async function handleDeclarationStart() {
+    if (state.declarationRunning || !state.account?.token) return;
+    state.currentLogScope = "declarations";
+    state.declarationCancelRequested = false;
+    state.declarationRunning = true;
+    state.currentLogScope = "declarations";
+    updateButtons();
+    const monthLabel = formatMonthLabel(state.monthKey);
+    pushLog("info", `??????????? ???????? ???????: ${monthLabel}`, "declarations");
+
+    try {
+      const response = await sendMessage({
+        action: "fetchWaybillTotal",
+        token: state.account.token,
+        month: state.monthKey,
+      });
+
+      if (!response?.ok) {
+        throw new Error(response?.message || "???? ??? ????????");
+      }
+
+      state.total = response.total;
+      updateTotalDisplay();
+      persistPanelState();
+      pushLog("ok", `????????? ??? ${formatCurrency(response.total)}`, "declarations");
+
+      state.currentLogScope = "declarations";
+      await runDeclarationAutomation();
+      pushLog("ok", "??????????? ??????? ????????.", "declarations");
+    } catch (error) {
+      const message = state.declarationCancelRequested
+        ? "??????????? ??????? ???????."
+        : error?.message || "??????????? ??????? ???????.";
+      pushLog("err", message, "declarations");
+    } finally {
+      state.declarationRunning = false;
+      state.declarationCancelRequested = false;
+      updateButtons();
+    }
+  }
+
+
+  async function runDeclarationAutomation() {
+    if (state.declarationRunning) return;
+    state.declarationRunning = true;
+    state.currentLogScope = "declarations";
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-    const clickOrFail = async (findFn, actionName) => {
-      try {
-        const el = findFn();
-        if (!el) {
-          const err = new Error(actionName);
-          err.actionName = actionName;
-          throw err;
-        }
-        if (typeof el.click === "function") {
-          el.click();
-        } else {
-          el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-        }
-        await sleep(1000);
-      } catch (err) {
-        if (!err.actionName) err.actionName = actionName;
-        throw err;
+    const [year, month] = state.monthKey.split("-");
+    const monthName = getMonthByValue(month).label;
+
+    const clickOrThrow = async (factory, description, delay = 400) => {
+      if (state.declarationCancelRequested) {
+        throw new Error("??????????? ??????? ???????.");
       }
+      const element = factory();
+      if (!element) {
+        throw new Error(`${description} ??? ????????`);
+      }
+      element.click();
+      await sleep(delay);
+    };
+
+    const findCellByText = (root, matcher) => {
+      const cells = Array.from(root.querySelectorAll("td"));
+      return cells.find((cell) => matcher((cell.textContent || cell.innerText || "").trim()));
     };
 
     try {
-      logDec(`▶ ${targetMonth} ${targetYear} დაწყება`);
-      await clickOrFail(() => document.querySelector('#hka1 > a'), 'ყოველთვიური');
-      await clickOrFail(() => Array.from(document.querySelectorAll('td')).find((td) => (td.textContent || '').trim() === 'დღგ'), 'დღგ');
-      await clickOrFail(() => document.querySelector('div.d_img_def'), 'თარიღის ჩამოსაშლელი');
-      await clickOrFail(() => {
-        const popup = document.querySelector('div.d_div.ks_popup');
-        if (!popup) return null;
-        return Array.from(popup.querySelectorAll('td')).find((td) => (td.textContent || '').trim() === targetYear) || null;
-      }, 'თვე/წელი');
-      await clickOrFail(() => {
-        const popup = document.querySelector('div.d_div.ks_popup');
-        if (!popup) return null;
-        return Array.from(popup.querySelectorAll('td.m')).find((td) => (td.textContent || '').trim() === targetMonth) || null;
-      }, 'თვე/წელი');
-      await clickOrFail(() => document.querySelector('.d_ok_img'), 'არჩევა');
-      await clickOrFail(() => document.querySelector('#control_0_new'), 'ახალი დეკლარაცია');
-      logDec('✅ დეკლარაცია შექმნილია');
-    } catch (err) {
-      const actionName = err?.actionName || err?.message || 'ქმედება';
-      logDec(`❌ ${actionName} ვერ შესრულდა`);
-    } finally {
-      declarationInProgress = false;
-    }
-  }
-
-  decStartBtn?.addEventListener('click', () => {
-    if (declarationInProgress) return;
-    if (!selectedMonth || !selectedYear) {
-      logDec('❌ თვე/წელი არ არის არჩეული');
-      return;
-    }
-    runDeclarationAutomation(selectedMonth, selectedYear);
-  });
-
-  // ---- BUTTONS ----
-  const startBtn = document.getElementById("rs-start");
-  const stopBtn = document.getElementById("rs-stop");
-
-  // Dragging
-  let isDragging = false, offsetX = 0, offsetY = 0;
-  const header = document.getElementById("rs-panel-header");
-  header.addEventListener("mousedown", (e) => {
-    isDragging = true;
-    const rect = panel.getBoundingClientRect();
-    offsetX = e.clientX - rect.left;
-    offsetY = e.clientY - rect.top;
-    document.body.style.userSelect = "none";
-  });
-  document.addEventListener("mouseup", () => {
-    if (isDragging) {
-      localStorage.setItem(
-        "rs_panel_position",
-        JSON.stringify({ left: panel.style.left, top: panel.style.top })
+      pushLog("info", "დეკლარაციის ვიჟეტის გახსნა...");
+      await clickOrThrow(
+        () => document.querySelector("#hka1 > a"),
+        "დეკლარაციის ჩანართი"
       );
+
+      await clickOrThrow(
+        () =>
+          findCellByText(document, (text) =>
+            /დღგ/i.test(text) || /დამატებული/i.test(text)
+          ),
+        "დღგ დეკლარაციის რიგი"
+      );
+
+      await clickOrThrow(
+        () => document.querySelector("div.d_img_def"),
+        "თარიღის არჩევა"
+      );
+
+      const popup = document.querySelector("div.d_div.ks_popup");
+      if (!popup) {
+        throw new Error("თარიღის ფანჯარა ვერ მოიძებნა");
+      }
+
+      await clickOrThrow(
+        () =>
+          findCellByText(popup, (text) => text === year),
+        `${year} წელი`
+      );
+
+      await clickOrThrow(
+        () =>
+          findCellByText(popup, (text) => text === monthName),
+        `${monthName} თვე`
+      );
+
+      await clickOrThrow(
+        () => document.querySelector(".d_ok_img"),
+        "თარიღის დამტკიცება"
+      );
+
+      await clickOrThrow(
+        () => document.querySelector("#control_0_new"),
+        "ახალი დეკლარაციის დაწყება",
+        700
+      );
+
+      pushLog("ok", `დეკლარაციის პროცესი მზად არის (${monthName} ${year})`);
+    } catch (err) {
+      pushLog("warn", err.message || "დეკლარაციის ნაბიჯი ვერ შესრულდა");
+    } finally {
+      state.declarationRunning = false;
     }
-    isDragging = false;
-    document.body.style.userSelect = "auto";
-  });
-  document.addEventListener("mousemove", (e) => {
-    if (!isDragging) return;
-    const rect = panel.getBoundingClientRect();
-    const vw = window.innerWidth;
-    const vh = window.innerHeight;
-
-    let newLeft = e.clientX - offsetX;
-    let newTop = e.clientY - offsetY;
-
-    newLeft = Math.max(0, Math.min(newLeft, vw - rect.width));
-    newTop = Math.max(0, Math.min(newTop, vh - rect.height));
-
-    panel.style.left = newLeft + "px";
-    panel.style.top = newTop + "px";
-  });
-
-  // ---- AUTOMATION ----
-  let invoiceAutomationActive = false;
-
-  function isReturnFlagged(row) {
-    return Array.from(row.querySelectorAll("td")).some((td) => {
-      const t = (td.getAttribute("title") || td.textContent || "").trim();
-      return t === "უკან დაბრუნება";
-    });
   }
 
-  async function runAutomation() {
-    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function runInvoiceAutomation() {
+    if (state.invoiceAutomationActive) return;
+    state.invoiceAutomationActive = true;
+    state.currentLogScope = "invoices";
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-    // Visual: panel glow while running
-    panel.classList.add("running");
-    stopBtn.classList.add("stop-active");
-
+    pushLog("info", "ინვოისების ავტომატიზაცია დაწყებულია.");
     let currentIndex = 0;
 
-    while (invoiceAutomationActive) {
+    while (state.invoiceAutomationActive) {
       const rows = Array.from(
         document.querySelectorAll("tr.rsGridDataRow, tr.rsGridDataRowAlt")
       );
-      if (!rows.length || currentIndex >= rows.length) break;
+
+      if (!rows.length || currentIndex >= rows.length) {
+        break;
+      }
 
       const row = rows[currentIndex];
       if (!row) break;
 
-      // Detect flag state for this row
-      const isFlagged = isReturnFlagged(row);
+      const isFlagged = Array.from(row.querySelectorAll("td")).some((td) => {
+        const text = (td.getAttribute("title") || td.textContent || "").trim();
+        return /დაბრუნ/i.test(text) || /return/i.test(text);
+      });
 
-      // Find the row checkbox
-      const invoiceCheckbox = row.querySelector('input[type="checkbox"][value]');
-      if (!invoiceCheckbox) {
-        if (isFlagged) currentIndex++; // move on if flagged but no checkbox
-        await sleep(120); // yield a bit to avoid hammering
+      const checkbox = row.querySelector('input[type="checkbox"][value]');
+      if (!checkbox) {
+        if (isFlagged) currentIndex += 1;
+        await sleep(120);
         continue;
       }
 
-      invoiceCheckbox.click();
-      await sleep(150);
+      checkbox.click();
+      await sleep(120);
 
-      // Only use Check All if not flagged
-      const globalUseCheckAll =
-        (localStorage.getItem("rs_use_checkall") ?? "true") === "true";
-      const useCheckAllNow = globalUseCheckAll && !isFlagged;
-
-      if (useCheckAllNow) {
-        const checkAll = document.querySelector('input[type="checkbox"][style=""]');
-        if (checkAll && !checkAll.checked) {
-          checkAll.click();
-          await sleep(100);
-        }
+      const checkAll = document.querySelector('input[type="checkbox"][style=""]');
+      if (checkAll && !isFlagged && !checkAll.checked) {
+        checkAll.click();
+        await sleep(120);
       }
 
-      // Click Create Invoice button
-      const createBtn =
+      const createButton =
         document.querySelector("#tool11") ||
-        Array.from(document.querySelectorAll('input[type="button"], button')).find((el) =>
-          /ანგარიშ[\s-]*ფაქტურ(ის)?\s*შექმნა/i.test(el.value || el.innerText || "")
+        Array.from(document.querySelectorAll('input[type="button"], button')).find(
+          (el) => {
+            const text = (el.value || el.innerText || "").trim();
+            return /შექმნა/i.test(text) || /Create/i.test(text);
+          }
         );
 
-      if (!createBtn) {
-        console.error("Create Invoice button not found!");
+      if (!createButton) {
+        pushLog("warn", "შექმნის ღილაკი ვერ მოიძებნა.");
         break;
       }
 
-      createBtn.click();
-      await sleep(900); // wait for dialogs/server
+      createButton.click();
+      await sleep(900);
 
-      // Uncheck Check All if used
-      if (useCheckAllNow) {
-        const checkAll = document.querySelector('input[type="checkbox"][style=""]');
-        if (checkAll && checkAll.checked) checkAll.click();
+      if (checkAll && checkAll.checked) {
+        checkAll.click();
       }
 
-      // If flagged, move down; otherwise stay on same index (row should disappear)
-      if (isFlagged) currentIndex++;
+      if (isFlagged) {
+        currentIndex += 1;
+      }
 
-      await sleep(150); // small yield to keep UI responsive
+      await sleep(140);
     }
 
-    // Reset flags so Start can run again later
-    invoiceAutomationActive = false;
-    panel.classList.remove("running");
-    stopBtn.classList.remove("stop-active");
-    console.log("✅ Automation finished");
+    state.invoiceAutomationActive = false;
+    pushLog("info", "ინვოისების ავტომატიზაცია დასრულებულია.");
   }
 
-  // ---- BUTTON EVENTS ----
-  startBtn.addEventListener("click", () => {
-    if (automationInProgress) return;        // prevent overlapping runs
-    invoiceAutomationActive = true;
-    automationInProgress = true;
-    runAutomation().finally(() => {
-      automationInProgress = false;          // always release lock
+  function setupDragging() {
+    if (!refs.handle || !refs.container) return;
+    let dragging = false;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    const handlePointerDown = (event) => {
+      dragging = true;
+      const rect = refs.container.getBoundingClientRect();
+      offsetX = event.clientX - rect.left;
+      offsetY = event.clientY - rect.top;
+      refs.handle.setPointerCapture(event.pointerId);
+    };
+
+    const handlePointerMove = (event) => {
+      if (!dragging) return;
+      const x = event.clientX - offsetX;
+      const y = event.clientY - offsetY;
+      const maxX = window.innerWidth - refs.container.offsetWidth - 10;
+      const maxY = window.innerHeight - refs.container.offsetHeight - 10;
+      refs.container.style.left = `${Math.max(10, Math.min(x, maxX))}px`;
+      refs.container.style.top = `${Math.max(10, Math.min(y, maxY))}px`;
+    };
+
+    const handlePointerUp = (event) => {
+      if (!dragging) return;
+      dragging = false;
+      refs.handle.releasePointerCapture(event.pointerId);
+      savePanelPosition();
+    };
+
+    refs.handle.addEventListener("pointerdown", handlePointerDown);
+    refs.handle.addEventListener("pointermove", handlePointerMove);
+    refs.handle.addEventListener("pointerup", handlePointerUp);
+    refs.handle.addEventListener("pointercancel", handlePointerUp);
+  }
+
+
+  function restorePanelPosition() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(POSITION_KEY) || "null");
+      if (saved && typeof saved.left === "number" && typeof saved.top === "number") {
+        refs.container.style.left = `${saved.left}px`;
+        refs.container.style.top = `${saved.top}px`;
+      } else {
+        const defaultLeft = Math.max(20, window.innerWidth - 290);
+        refs.container.style.left = `${defaultLeft}px`;
+        refs.container.style.top = "90px";
+      }
+    } catch {
+      const defaultLeft = Math.max(20, window.innerWidth - 290);
+      refs.container.style.left = `${defaultLeft}px`;
+      refs.container.style.top = "90px";
+    }
+  }
+
+
+  function savePanelPosition() {
+    const rect = refs.container.getBoundingClientRect();
+    localStorage.setItem(
+      POSITION_KEY,
+      JSON.stringify({ left: Math.round(rect.left), top: Math.round(rect.top) })
+    );
+  }
+
+  function attachStorageListeners() {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== "local") return;
+
+      if (changes.mainAccount || changes.subAccounts || changes.selectedAccount) {
+        updateAccount()
+          .then(() => {
+            updateAccountDisplay();
+            applySavedPanelState();
+            updateButtons();
+          })
+          .catch(() => {});
+      }
+
+      if (changes.panelEnabled) {
+        state.panelEnabled = changes.panelEnabled.newValue !== false;
+        refs.container.classList.toggle("rs-panel-hidden", !state.panelEnabled);
+      }
+
+      if (changes[STORAGE_PANEL_STATE]) {
+        state.savedPanelState = changes[STORAGE_PANEL_STATE].newValue ?? {};
+        applySavedPanelState();
+      }
     });
-  });
+  }
 
-  stopBtn.addEventListener("click", () => {
-    invoiceAutomationActive = false;         // loop will exit gracefully
-    panel.classList.remove("running");
-    stopBtn.classList.remove("stop-active");
-  });
+  function attachRuntimeListeners() {
+    chrome.runtime.onMessage.addListener((message) => {
+      if (message?.action === "logoutRequired") {
+      pauseAutomation(false);
+      state.account = null;
+      updateAccountDisplay();
+      updateButtons();
+      pushLog("warn", "????? ???????????. ??????, ??????? ???????? ???????????.", "invoices");
+      pushLog("warn", "????? ???????????. ??????, ??????? ???????? ???????????.", "declarations");
+      setActiveTab("invoices", { skipPause: true, force: true, skipPersist: false });
+    }
+      if (message?.action === "stopAutomation") {
+        handleInvoiceStop();
+      }
+    });
+  }
 
-  // license revoked / toggle visibility -> stop or hide
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (msg.action === "stopAutomation") {
-      console.log("License revoked, stopping automation");
-      invoiceAutomationActive = false;
-      panel.classList.remove("running");
-      stopBtn.classList.remove("stop-active");
-    }
-    if (msg.action === "togglePanelVisibility") {
-      panel.style.display = msg.visible ? "block" : "none";
-    }
-  });
-}
+  function storageGet(key) {
+    return new Promise((resolve) => {
+      chrome.storage.local.get([key], resolve);
+    });
+  }
+
+  function storageSet(values) {
+    return new Promise((resolve) => {
+      chrome.storage.local.set(values, resolve);
+    });
+  }
+
+  function sendMessage(payload) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(payload, (response) => {
+          if (chrome.runtime.lastError) {
+            console.warn("Messaging error:", chrome.runtime.lastError.message);
+            resolve(undefined);
+            return;
+          }
+          resolve(response);
+        });
+      } catch (err) {
+        console.warn("Messaging failure:", err);
+        resolve(undefined);
+      }
+    });
+  }
+;
+    function getPanelStyles() {
+    return `
+      .rs-panel,
+      .rs-panel * {
+        all: unset;
+        box-sizing: border-box;
+        font-family: "Inter", sans-serif;
+        font-size: 13px;
+        color: #333;
+      }
+
+      .rs-panel {
+        position: fixed;
+        top: 90px;
+        left: 24px;
+        width: 270px;
+        background: linear-gradient(145deg, #ffffff 0%, #f2f7ff 100%);
+        border: 1px solid #dce3f0;
+        border-radius: 10px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        z-index: 999999;
+      }
+
+      .rs-panel.rs-panel-hidden {
+        display: none;
+      }
+
+      .rs-panel-handle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        cursor: grab;
+        padding: 0 2px;
+      }
+
+      .rs-panel-brand {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .rs-panel-title {
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+
+      .rs-panel-sub {
+        font-size: 11px;
+        color: #5d6a7d;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .rs-panel-account {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 2px;
+        text-align: right;
+      }
+
+      .rs-panel-account-label {
+        font-weight: 600;
+        font-size: 12px;
+        color: #1f3f7f;
+      }
+
+      .rs-panel-account-hint {
+        font-size: 11px;
+        color: #7b8594;
+        max-width: 150px;
+        line-height: 1.3;
+      }
+
+      .rs-tabs {
+        display: flex;
+        height: 34px;
+        border-radius: 8px;
+        overflow: hidden;
+        background: linear-gradient(90deg, #007bff 0%, #4b9dff 100%);
+      }
+
+      .rs-tab {
+        flex: 1;
+        text-align: center;
+        color: #e9f2ff;
+        font-weight: 500;
+        cursor: pointer;
+        line-height: 34px;
+        position: relative;
+        transition: background 0.25s ease, color 0.25s ease;
+      }
+
+      .rs-tab:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .rs-tab.active {
+        color: #ffffff;
+        background: rgba(255, 255, 255, 0.15);
+      }
+
+      .rs-tab::after {
+        content: "";
+        position: absolute;
+        bottom: 0;
+        left: 25%;
+        width: 50%;
+        height: 3px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.75);
+        opacity: 0;
+        transform: scaleX(0.5);
+        transition: opacity 0.25s ease, transform 0.25s ease;
+        box-shadow: 0 0 10px rgba(255, 255, 255, 0.4);
+      }
+
+      .rs-tab.active::after {
+        opacity: 1;
+        transform: scaleX(1);
+      }
+
+      .rs-panel-body {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .rs-panel-section {
+        display: none;
+        flex-direction: column;
+        gap: 8px;
+        opacity: 0;
+        transform: translateY(4px);
+        transition: opacity 0.25s ease, transform 0.25s ease;
+      }
+
+      .rs-panel-section.active {
+        display: flex;
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .rs-block {
+        background: rgba(255, 255, 255, 0.85);
+        border: 1px solid #e4ecf8;
+        border-radius: 8px;
+        padding: 8px 10px;
+        box-shadow: inset 0 0 6px rgba(255, 255, 255, 0.6);
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .rs-checkbox {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: #3b4a62;
+        cursor: pointer;
+      }
+
+      .rs-checkbox input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        border-radius: 4px;
+        border: 1px solid #6fa4ff;
+        background: #f4f7ff;
+        transition: background 0.2s ease, border 0.2s ease;
+      }
+
+      .rs-checkbox input[type="checkbox"]:checked {
+        background: linear-gradient(145deg, #007bff 0%, #4b9dff 100%);
+        border-color: transparent;
+      }
+
+      .rs-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .rs-btn {
+        flex: 1;
+        background: linear-gradient(145deg, #007bff 0%, #4b9dff 100%);
+        border-radius: 6px;
+        color: #ffffff;
+        font-weight: 500;
+        text-align: center;
+        padding: 7px 10px;
+        cursor: pointer;
+        box-shadow: 0 2px 6px rgba(0, 123, 255, 0.25);
+        transition: transform 0.25s ease, box-shadow 0.25s ease;
+      }
+
+      .rs-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 3px 8px rgba(0, 123, 255, 0.35);
+      }
+
+      .rs-btn:active {
+        transform: scale(0.97);
+        box-shadow: 0 1px 4px rgba(0, 123, 255, 0.2);
+      }
+
+      .rs-btn.rs-btn-muted {
+        background: rgba(0, 123, 255, 0.12);
+        color: #0b6bff;
+        box-shadow: none;
+      }
+
+      .rs-btn[disabled] {
+        cursor: not-allowed;
+        opacity: 0.55;
+        box-shadow: none;
+        transform: none;
+      }
+
+      .rs-calendar {
+        display: flex;
+        gap: 8px;
+      }
+
+      .rs-calendar label {
+        flex: 1;
+        font-size: 11px;
+        color: #56637a;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .rs-calendar select {
+        background: #f4f6fa;
+        border: 1px solid #cfd9ea;
+        border-radius: 6px;
+        padding: 4px 6px;
+        cursor: pointer;
+        transition: border 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      .rs-calendar select:focus {
+        border-color: #4b9dff;
+        box-shadow: 0 0 0 3px rgba(75, 157, 255, 0.22);
+        background: #ffffff;
+      }
+
+      .rs-total {
+        background: rgba(248, 250, 255, 0.9);
+        border: 1px solid #d8e2f7;
+      }
+
+      .rs-total-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        color: #4365a6;
+        letter-spacing: 0.04em;
+      }
+
+      .rs-total-value {
+        font-weight: 700;
+        font-size: 16px;
+        color: #214377;
+      }
+
+      .rs-log {
+        background: rgba(248, 250, 255, 0.9);
+        border: 1px solid #e1e7f5;
+        border-radius: 8px;
+        max-height: 120px;
+        overflow-y: auto;
+        padding: 6px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 12px;
+      }
+
+      .rs-log-entry {
+        display: flex;
+        gap: 6px;
+        line-height: 1.3;
+      }
+
+      .rs-log-entry::before {
+        content: "�";
+      }
+
+      .rs-log-entry.ok {
+        color: #28a745;
+      }
+
+      .rs-log-entry.err {
+        color: #d93025;
+      }
+
+      .rs-log-entry.warn {
+        color: #e37400;
+      }
+
+      .rs-log-entry.info {
+        color: #0b6bff;
+      }
+    ;
+  }
+
+      .rs-panel {
+        position: fixed;
+        top: 90px;
+        left: 24px;
+        width: 270px;
+        background: linear-gradient(145deg, #ffffff 0%, #f2f7ff 100%);
+        border: 1px solid #dce3f0;
+        border-radius: 10px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        z-index: 999999;
+      }
+
+      .rs-panel.rs-panel-hidden {
+        display: none;
+      }
+
+      .rs-panel-handle {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        cursor: grab;
+        padding: 0 2px;
+      }
+
+      .rs-panel-brand {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+
+      .rs-panel-title {
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+
+      .rs-panel-sub {
+        font-size: 11px;
+        color: #5d6a7d;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+
+      .rs-panel-account {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 2px;
+        text-align: right;
+      }
+
+      .rs-panel-account-label {
+        font-weight: 600;
+        font-size: 12px;
+        color: #1f3f7f;
+      }
+
+      .rs-panel-account-hint {
+        font-size: 11px;
+        color: #7b8594;
+        max-width: 150px;
+        line-height: 1.3;
+      }
+
+      .rs-tabs {
+        display: flex;
+        height: 34px;
+        border-radius: 8px;
+        overflow: hidden;
+        background: linear-gradient(90deg, #007bff 0%, #4b9dff 100%);
+      }
+
+      .rs-tab {
+        flex: 1;
+        text-align: center;
+        color: #e9f2ff;
+        font-weight: 500;
+        cursor: pointer;
+        line-height: 34px;
+        position: relative;
+        transition: background 0.25s ease, color 0.25s ease;
+      }
+
+      .rs-tab:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
+
+      .rs-tab.active {
+        color: #ffffff;
+        background: rgba(255, 255, 255, 0.15);
+      }
+
+      .rs-tab::after {
+        content: "";
+        position: absolute;
+        bottom: 0;
+        left: 25%;
+        width: 50%;
+        height: 3px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.75);
+        opacity: 0;
+        transform: scaleX(0.5);
+        transition: opacity 0.25s ease, transform 0.25s ease;
+        box-shadow: 0 0 10px rgba(255, 255, 255, 0.4);
+      }
+
+      .rs-tab.active::after {
+        opacity: 1;
+        transform: scaleX(1);
+      }
+
+      .rs-panel-body {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .rs-panel-section {
+        display: none;
+        flex-direction: column;
+        gap: 8px;
+        opacity: 0;
+        transform: translateY(4px);
+        transition: opacity 0.25s ease, transform 0.25s ease;
+      }
+
+      .rs-panel-section.active {
+        display: flex;
+        opacity: 1;
+        transform: translateY(0);
+      }
+
+      .rs-block {
+        background: rgba(255, 255, 255, 0.85);
+        border: 1px solid #e4ecf8;
+        border-radius: 8px;
+        padding: 8px 10px;
+        box-shadow: inset 0 0 6px rgba(255, 255, 255, 0.6);
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .rs-checkbox {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: #3b4a62;
+        cursor: pointer;
+      }
+
+      .rs-checkbox input[type="checkbox"] {
+        width: 16px;
+        height: 16px;
+        border-radius: 4px;
+        border: 1px solid #6fa4ff;
+        background: #f4f7ff;
+        transition: background 0.2s ease, border 0.2s ease;
+      }
+
+      .rs-checkbox input[type="checkbox"]:checked {
+        background: linear-gradient(145deg, #007bff 0%, #4b9dff 100%);
+        border-color: transparent;
+      }
+
+      .rs-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .rs-btn {
+        flex: 1;
+        background: linear-gradient(145deg, #007bff 0%, #4b9dff 100%);
+        border-radius: 6px;
+        color: #ffffff;
+        font-weight: 500;
+        text-align: center;
+        padding: 7px 10px;
+        cursor: pointer;
+        box-shadow: 0 2px 6px rgba(0, 123, 255, 0.25);
+        transition: transform 0.25s ease, box-shadow 0.25s ease;
+      }
+
+      .rs-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 3px 8px rgba(0, 123, 255, 0.35);
+      }
+
+      .rs-btn:active {
+        transform: scale(0.97);
+        box-shadow: 0 1px 4px rgba(0, 123, 255, 0.2);
+      }
+
+      .rs-btn.rs-btn-muted {
+        background: rgba(0, 123, 255, 0.12);
+        color: #0b6bff;
+        box-shadow: none;
+      }
+
+      .rs-btn[disabled] {
+        cursor: not-allowed;
+        opacity: 0.55;
+        box-shadow: none;
+        transform: none;
+      }
+
+      .rs-calendar {
+        display: flex;
+        gap: 8px;
+      }
+
+      .rs-calendar label {
+        flex: 1;
+        font-size: 11px;
+        color: #56637a;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .rs-calendar select {
+        background: #f4f6fa;
+        border: 1px solid #cfd9ea;
+        border-radius: 6px;
+        padding: 4px 6px;
+        cursor: pointer;
+        transition: border 0.2s ease, box-shadow 0.2s ease;
+      }
+
+      .rs-calendar select:focus {
+        border-color: #4b9dff;
+        box-shadow: 0 0 0 3px rgba(75, 157, 255, 0.22);
+        background: #ffffff;
+      }
+
+      .rs-total {
+        background: rgba(248, 250, 255, 0.9);
+        border: 1px solid #d8e2f7;
+      }
+
+      .rs-total-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        color: #4365a6;
+        letter-spacing: 0.04em;
+      }
+
+      .rs-total-value {
+        font-weight: 700;
+        font-size: 16px;
+        color: #214377;
+      }
+
+      .rs-log {
+        background: rgba(248, 250, 255, 0.9);
+        border: 1px solid #e1e7f5;
+        border-radius: 8px;
+        max-height: 120px;
+        overflow-y: auto;
+        padding: 6px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 12px;
+      }
+
+      .rs-log-entry {
+        display: flex;
+        gap: 6px;
+        line-height: 1.3;
+      }
+
+      .rs-log-entry::before {
+        content: "•";
+      }
+
+      .rs-log-entry.ok {
+        color: #28a745;
+      }
+
+      .rs-log-entry.err {
+        color: #d93025;
+      }
+
+      .rs-log-entry.warn {
+        color: #e37400;
+      }
+
+      .rs-log-entry.info {
+        color: #0b6bff;
+      }
+    `;
+  }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
