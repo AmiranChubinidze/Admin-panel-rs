@@ -1,5 +1,5 @@
 // background.js
-const API_BASE = "https://amnairi-rs-server.onrender.com";
+const API_BASE = "https://admin-panel-rs.onrender.com";
 const REFRESH_ALARM = "amnairi-token-refresh";
 const REFRESH_INTERVAL_MINUTES = 30;
 const REFRESH_THRESHOLD_MS = 6 * 60 * 60 * 1000; // 6 hours

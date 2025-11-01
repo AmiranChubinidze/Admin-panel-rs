@@ -1,5 +1,5 @@
 ﻿// popup.js
-const API_BASE = "https://amnairi-rs-server.onrender.com";
+const API_BASE = "https://admin-panel-rs.onrender.com";
 
 const authView = document.getElementById("auth-view");
 const mainView = document.getElementById("main-view");
